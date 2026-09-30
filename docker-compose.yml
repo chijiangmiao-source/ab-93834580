@@ -1,0 +1,33 @@
+services:
+  web:
+    build: .
+    image: payload-audit:latest
+    environment:
+      AUDIT_DATA_PATH: /data/audits.json
+    ports:
+      # 宿主机端口可用 AUDIT_PORT 覆盖，默认 8080；健康检查 http://127.0.0.1:${AUDIT_PORT}/healthz
+      - "${AUDIT_PORT:-8080}:8000"
+    volumes:
+      - audit-data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request,sys; r=urllib.request.urlopen('http://127.0.0.1:8000/healthz',timeout=4); sys.exit(0 if json.load(r)['status']=='ok' else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 8s
+
+  verify:
+    image: payload-audit:latest
+    build: .
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      AUDIT_BASE_URL: http://web:8000
+      AUDIT_DATA_PATH: /tmp/verify-local.json
+    # 单次验收：引擎复核 → pytest → 构建检查 → 真实 HTTP 冒烟；退出码即验收结论。
+    command: ["python", "verify.py"]
+    restart: "no"
+
+volumes:
+  audit-data:

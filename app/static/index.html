@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>星载递归载荷兼容审计</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --fg: #e6edf3;
+    --muted: #8b949e; --accent: #2f81f7; --ok: #3fb950; --bad: #f85149; --warn: #d29922;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0 0 4px; font-size: 19px; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 28px 60px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+  .panel h2 { margin: 0 0 10px; font-size: 14px; color: var(--muted); font-weight: 600; letter-spacing: .04em; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+  textarea, input { width: 100%; background: #0d1117; color: var(--fg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 11px; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  textarea { min-height: 250px; resize: vertical; tab-size: 2; }
+  input { font-family: inherit; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 14px 0; }
+  button { background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 18px;
+    font-size: 14px; font-weight: 600; cursor: pointer; }
+  button.secondary { background: #21262d; border: 1px solid var(--border); color: var(--fg); }
+  button:hover { filter: brightness(1.12); }
+  #result { margin-top: 18px; }
+  .badge { display: inline-block; padding: 3px 12px; border-radius: 999px; font-weight: 700; font-size: 13px; }
+  .badge.compatible { background: rgba(63,185,80,.15); color: var(--ok); border: 1px solid rgba(63,185,80,.4); }
+  .badge.incompatible { background: rgba(248,81,73,.15); color: var(--bad); border: 1px solid rgba(248,81,73,.4); }
+  .badge.invalid { background: rgba(210,153,34,.15); color: var(--warn); border: 1px solid rgba(210,153,34,.4); }
+  .meta { color: var(--muted); font-size: 12.5px; margin-top: 6px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-top: 12px; }
+  .card.errorcard { border-color: rgba(248,81,73,.5); }
+  .pathelems { margin: 6px 0 2px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 13px; }
+  .pathelems b { color: #79c0ff; font-weight: 600; }
+  .sep { color: var(--muted); margin: 0 5px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  td, th { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; }
+  .code { font-family: ui-monospace, Menlo, Consolas, monospace; color: #ffa657; }
+  .recursion-note { color: var(--muted); font-size: 12.5px; }
+  .errline { padding: 5px 0; border-bottom: 1px dashed var(--border); }
+  .errline:last-child { border-bottom: 0; }
+  .errline .where { color: #79c0ff; font-family: ui-monospace, Menlo, Consolas, monospace; margin-right: 8px; }
+  .banner { padding: 10px 14px; border-radius: 8px; margin-top: 12px; font-size: 13.5px; }
+  .banner.conflict { background: rgba(248,81,73,.1); border: 1px solid rgba(248,81,73,.45); }
+  .banner.info { background: rgba(47,129,247,.1); border: 1px solid rgba(47,129,247,.4); }
+  #status { color: var(--muted); font-size: 12.5px; min-height: 18px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>星载递归载荷兼容审计</h1>
+  <p>发送端 = 生产者，接收端 = 消费者 · 协归结构子类型裁决（引用处闭合，不做定深展开）</p>
+</header>
+<main>
+  <div class="panel">
+    <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+      <div style="flex:2;min-width:260px">
+        <label for="auditId">稳定审计标识</label>
+        <input id="auditId" placeholder="例如 mission-X.cmd.payload.v3" />
+      </div>
+      <div style="flex:1;min-width:220px;display:flex;gap:8px">
+        <button id="submitBtn">提交审计</button>
+        <button id="reopenBtn" class="secondary">按标识重开</button>
+      </div>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="grid" style="margin-top:16px">
+    <div class="panel">
+      <h2>发送端类型声明（生产者，第一个类型为根）</h2>
+      <textarea id="sender" spellcheck="false"></textarea>
+    </div>
+    <div class="panel">
+      <h2>接收端类型声明（消费者，第一个类型为根）</h2>
+      <textarea id="receiver" spellcheck="false"></textarea>
+    </div>
+  </div>
+
+  <div id="result"></div>
+</main>
+
+<script>
+const EXAMPLE = {
+  sender: [
+    { name: "Cmd", type: { kind: "record", fields: [
+      { name: "id", type: { kind: "int" }, required: true },
+      { name: "body", type: { kind: "ref", name: "Payload" }, required: true },
+      { name: "trace", type: { kind: "text" }, required: false }
+    ]}},
+    { name: "Payload", type: { kind: "variant", tags: [
+      { label: "Arm", type: { kind: "record", fields: [
+        { name: "delay", type: { kind: "int" }, required: true },
+        { name: "next", type: { kind: "ref", name: "Payload" }, required: false }
+      ]}},
+      { label: "Ping", type: { kind: "bool" } }
+    ]}}
+  ],
+  receiver: [
+    { name: "CmdReq", type: { kind: "record", fields: [
+      { name: "id", type: { kind: "int" }, required: true },
+      { name: "body", type: { kind: "ref", name: "PayloadReq" }, required: true }
+    ]}},
+    { name: "PayloadReq", type: { kind: "variant", tags: [
+      { label: "Arm", type: { kind: "record", fields: [
+        { name: "delay", type: { kind: "int" }, required: true },
+        { name: "next", type: { kind: "ref", name: "PayloadReq" }, required: false }
+      ]}},
+      { label: "Ping", type: { kind: "bool" } },
+      { label: "Noop", type: { kind: "bool" } }
+    ]}}
+  ]
+};
+
+const $ = (id) => document.getElementById(id);
+$("sender").value = JSON.stringify(EXAMPLE.sender, null, 2);
+$("receiver").value = JSON.stringify(EXAMPLE.receiver, null, 2);
+$("auditId").value = "mission-X.cmd.payload.v3";
+
+function setStatus(msg) { $("status").textContent = msg || ""; }
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+function readEditors() {
+  let sender, receiver;
+  try { sender = JSON.parse($("sender").value); }
+  catch (e) { throw new Error("发送端 JSON 无法解析: " + e.message); }
+  try { receiver = JSON.parse($("receiver").value); }
+  catch (e) { throw new Error("接收端 JSON 无法解析: " + e.message); }
+  return { sender, receiver };
+}
+
+function renderPath(path) {
+  return (path || []).map((p, i) =>
+    (i ? '<span class="sep">›</span>' : "") + "<b>" + esc(p) + "</b>").join("");
+}
+
+function renderReport(data) {
+  const conclusion = data.conclusion;
+  const label = { compatible: "兼容 · 接收端接受", incompatible: "不兼容 · 接收端拒收", invalid: "契约非法 · 未裁决" }[conclusion] || conclusion;
+  let html = `<div class="card">
+      <span class="badge ${esc(conclusion)}">${esc(label)}</span>
+      <div class="meta">审计标识 <span class="code">${esc(data.audit_id || "")}</span>` +
+    (data.created_at ? ` · 冻结于 ${esc(data.created_at)}` : "") +
+    (data.reused_frozen ? ` · ${data.created ? "" : "读取原冻结结论"}` : "") +
+    `</div>`;
+
+  if (data.entry) {
+    html += `<div class="meta">比较根：发送端 <span class="code">${esc(data.entry.sender)}</span>
+      对 接收端 <span class="code">${esc(data.entry.receiver)}</span>
+      · 展开比较对 ${data.compared_pairs ?? 0} 个</div>`;
+  }
+  html += `</div>`;
+
+  if (conclusion === "invalid" && Array.isArray(data.errors)) {
+    html += `<div class="card errorcard"><strong>静态问题（一次列出全部）</strong>`;
+    for (const e of data.errors) {
+      html += `<div class="errline"><span class="where">${esc(e.where || "—")}</span>
+        <span class="code">[${esc(e.code)}]</span> ${esc(e.message)}</div>`;
+    }
+    html += `</div>`;
+  }
+
+  if (conclusion === "incompatible" && data.violation) {
+    const v = data.violation;
+    html += `<div class="card errorcard">
+      <strong>首个稳定违约</strong>
+      <div class="pathelems">${renderPath(v.path)}</div>
+      <div><span class="code">[${esc(v.code)}]</span> ${esc(v.detail)}</div>
+    </div>`;
+  }
+
+  if (Array.isArray(data.reused_pairs) && data.reused_pairs.length) {
+    html += `<div class="card"><strong>递归处已复用的比较对（协归闭合点）</strong>
+      <table><thead><tr><th>类型路径</th><th>发送端类型</th><th>接收端类型</th></tr></thead><tbody>`;
+    for (const m of data.reused_pairs) {
+      html += `<tr><td class="pathelems">${renderPath(m.path)}</td>
+        <td class="code">${esc(m.sender)}</td><td class="code">${esc(m.receiver)}</td></tr>`;
+    }
+    html += `</tbody></table>
+      <p class="recursion-note">这些比较对在当前证明分支上再次出现时按余归纳假设成立，未做定深展开或实例抽样。</p></div>`;
+  }
+
+  $("result").innerHTML = html;
+}
+
+async function submit() {
+  setStatus("");
+  let body;
+  try {
+    const parsed = readEditors();
+    body = { audit_id: $("auditId").value.trim(), sender: parsed.sender, receiver: parsed.receiver };
+  } catch (e) {
+    $("result").innerHTML = `<div class="banner conflict">${esc(e.message)}</div>`;
+    return;
+  }
+  if (!body.audit_id) {
+    $("result").innerHTML = `<div class="banner conflict">请填写稳定审计标识</div>`;
+    return;
+  }
+  setStatus("提交中…");
+  try {
+    const resp = await fetch("/api/audits", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json();
+    if (resp.status === 409) {
+      $("result").innerHTML = `<div class="banner conflict"><strong>拒绝改写冻结结论</strong><br>${esc(data.message || "")}
+        <br><span class="meta">原结论冻结于 ${esc(data.frozen_created_at || "")}，请使用新的审计标识。</span></div>`;
+      setStatus("HTTP 409：契约已变化，原结论未被改写");
+      return;
+    }
+    data.audit_id = body.audit_id;
+    renderReport(data);
+    setStatus(resp.status === 201 ? "已创建并冻结新结论（HTTP 201）" : "相同契约重传，返回原冻结结论（HTTP 200）");
+  } catch (e) {
+    $("result").innerHTML = `<div class="banner conflict">请求失败：${esc(e.message)}</div>`;
+    setStatus("");
+  }
+}
+
+async function reopen() {
+  const id = $("auditId").value.trim();
+  if (!id) { $("result").innerHTML = `<div class="banner conflict">请填写要重开的审计标识</div>`; return; }
+  setStatus("重开中…");
+  try {
+    const resp = await fetch("/api/audits/" + encodeURIComponent(id));
+    const data = await resp.json();
+    if (resp.status === 404) {
+      $("result").innerHTML = `<div class="banner conflict">未找到审计标识 <span class="code">${esc(id)}</span> 的冻结结论</div>`;
+      setStatus("HTTP 404");
+      return;
+    }
+    if (data.contract) {
+      $("sender").value = JSON.stringify(data.contract.sender, null, 2);
+      $("receiver").value = JSON.stringify(data.contract.receiver, null, 2);
+    }
+    renderReport(data);
+    setStatus("已重开原冻结结论（契约已回填编辑器）");
+  } catch (e) {
+    $("result").innerHTML = `<div class="banner conflict">请求失败：${esc(e.message)}</div>`;
+    setStatus("");
+  }
+}
+
+$("submitBtn").addEventListener("click", submit);
+$("reopenBtn").addEventListener("click", reopen);
+</script>
+</body>
+</html>
+parameter
